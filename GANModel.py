@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from torch.nn import Parameter
 import torch.nn.functional as F
 import torch.utils.data
 from params import *
@@ -38,7 +37,6 @@ class Transpose1dLayer(nn.Module):
 
     def forward(self, x):
         if self.upsample:
-            # recommended by wavgan paper to use nearest upsampling
             x = nn.functional.interpolate(x, scale_factor=self.upsample, mode="nearest")
         return self.transpose_ops(x)
 
@@ -50,7 +48,6 @@ class Conv1D(nn.Module):
         output_channels,
         kernel_size,
         alpha=0.2,
-        shift_factor=2,
         stride=4,
         padding=11,
         use_batch_norm=False,
@@ -89,7 +86,7 @@ class WaveGANGenerator(nn.Module):
     ):
         super(WaveGANGenerator, self).__init__()
 
-        self.slice_len = 16384
+        self.slice_len = 65536
         self.ngpus = ngpus
         self.model_size = model_size  # d
         self.num_channels = num_channels  # c
@@ -97,7 +94,7 @@ class WaveGANGenerator(nn.Module):
         self.verbose = verbose
         self.use_batch_norm = use_batch_norm
 
-        self.dim_mul = 16
+        self.dim_mul = 32
 
         self.fc1 = nn.Linear(latent_dim, 4 * 4 * model_size * self.dim_mul)
         self.bn1 = nn.BatchNorm1d(num_features=model_size * self.dim_mul)
@@ -146,6 +143,26 @@ class WaveGANGenerator(nn.Module):
                 25,
                 stride,
                 upsample=upsample,
+            ),
+            Transpose1dLayer(
+                (self.dim_mul * model_size) // 16,
+                model_size,
+                25,
+                stride,
+                upsample=upsample,
+                use_batch_norm=use_batch_norm,
+            ),
+            Transpose1dLayer(model_size, num_channels, 25, 2, upsample=upsample),
+            Transpose1dLayer(
+                (self.dim_mul * model_size) // 16,
+                model_size,
+                25,
+                stride,
+                upsample=upsample,
+                use_batch_norm=use_batch_norm,
+            ),
+            Transpose1dLayer(
+                model_size, num_channels, 25, stride, upsample=upsample
             )
         ]
 
@@ -183,7 +200,7 @@ class WaveGANDiscriminator(nn.Module):
     ):
         super(WaveGANDiscriminator, self).__init__()
 
-        self.slice_len = 16384
+        self.slice_len = 65536
         self.model_size = model_size  # d
         self.ngpus = ngpus
         self.use_batch_norm = use_batch_norm
@@ -200,8 +217,7 @@ class WaveGANDiscriminator(nn.Module):
                 stride=4,
                 padding=11,
                 use_batch_norm=use_batch_norm,
-                alpha=alpha,
-                shift_factor=shift_factor,
+                alpha=alpha
             ),
             Conv1D(
                 model_size,
@@ -210,8 +226,7 @@ class WaveGANDiscriminator(nn.Module):
                 stride=4,
                 padding=11,
                 use_batch_norm=use_batch_norm,
-                alpha=alpha,
-                shift_factor=shift_factor,
+                alpha=alpha
             ),
             Conv1D(
                 2 * model_size,
@@ -220,8 +235,7 @@ class WaveGANDiscriminator(nn.Module):
                 stride=4,
                 padding=11,
                 use_batch_norm=use_batch_norm,
-                alpha=alpha,
-                shift_factor=shift_factor,
+                alpha=alpha
             ),
             Conv1D(
                 4 * model_size,
@@ -230,8 +244,7 @@ class WaveGANDiscriminator(nn.Module):
                 stride=4,
                 padding=11,
                 use_batch_norm=use_batch_norm,
-                alpha=alpha,
-                shift_factor=shift_factor,
+                alpha=alpha
             ),
             Conv1D(
                 8 * model_size,
@@ -240,11 +253,38 @@ class WaveGANDiscriminator(nn.Module):
                 stride=4,
                 padding=11,
                 use_batch_norm=use_batch_norm,
-                alpha=alpha,
-                shift_factor=0 if slice_len == 16384 else shift_factor,
-            ),
+                alpha=alpha
+            )
         ]
+
         self.fc_input_size = 256 * model_size
+
+        conv_layers.append(
+            Conv1D(
+                16 * model_size,
+                32 * model_size,
+                25,
+                stride=2,
+                padding=11,
+                use_batch_norm=use_batch_norm,
+                alpha=alpha
+            )
+        )
+
+        self.fc_input_size = 480 * model_size
+
+        conv_layers.append(
+            Conv1D(
+                16 * model_size,
+                32 * model_size,
+                25,
+                stride=4,
+                padding=11,
+                use_batch_norm=use_batch_norm,
+                alpha=alpha
+            )
+        )
+        self.fc_input_size = 512 * model_size
 
         self.conv_layers = nn.ModuleList(conv_layers)
 
@@ -264,21 +304,3 @@ class WaveGANDiscriminator(nn.Module):
             print(x.shape)
 
         return self.fc1(x)
-
-
-if __name__ == "__main__":
-    from torch.autograd import Variable
-
-    G = WaveGANGenerator(
-        verbose=True, upsample=True, use_batch_norm=True
-    )
-    out = G(Variable(torch.randn(10, noise_latent_dim)))
-    print(out.shape)
-    assert out.shape == (10, 1, slice_len)
-    print("==========================")
-
-    D = WaveGANDiscriminator(verbose=True, use_batch_norm=True)
-    out2 = D(Variable(torch.randn(10, 1, 16384)))
-    print(out2.shape)
-    assert out2.shape == (10, 1)
-    print("==========================")
